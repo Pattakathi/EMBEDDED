@@ -1,0 +1,207 @@
+#include <DHT.h>
+#include <ESP8266WiFi.h>
+
+#define DHTPIN D5         // Pin where the DHT sensor is connected
+#define DHTTYPE DHT11     // DHT 11 (or use DHT22 if you have that)
+#define SOILMOISTUREPIN D1  // Pin for the soil moisture sensor
+#define RELAYPIN D6       // Pin for the relay (for water pump)
+
+DHT dht(DHTPIN, DHTTYPE);
+
+float temperature = 0.0;
+float humidity = 0.0;
+int soilMoisture = 0;
+
+const int SOIL_MOISTURE_THRESHOLD = 500; // Soil moisture threshold (lower value = drier soil)
+bool relayStatus = false;
+
+// Wi-Fi credentials
+const char* ssid = "Firmware";   // Your WiFi SSID
+const char* password = "Solutions@12345"; // Your WiFi password
+
+WiFiServer server(80); // Start the server on port 80
+
+// Function to generate the HTML page with current sensor data
+String generateHTML() {
+  String html = R"=====(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AUTOMATIC PLANT MONITORING</title>
+  <meta http-equiv="refresh" content="5"> <!-- Auto-refresh every 5 seconds -->
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: linear-gradient(120deg, #a1c4fd, #c2e9fb);
+      margin: 0;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+    .container {
+      background: white;
+      padding: 30px;
+      border-radius: 15px;
+      box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+      text-align: center;
+      max-width: 400px;
+      width: 100%;
+    }
+    h1 {
+      font-size: 1.8em;
+      color: #333;
+      margin-bottom: 20px;
+      text-shadow: 2px 2px #6ea1f7;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+    th, td {
+      padding: 12px;
+      border: 1px solid #ddd;
+      text-align: center;
+    }
+    th {
+      background-color: #e3f2fd;
+      color: #1e88e5;
+    }
+    td {
+      background-color: #bbdefb;
+      color: #0d47a1;
+    }
+    .status {
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>AUTOMATIC PLANT MONITORING</h1>
+    <table>
+      <tr>
+        <th>Sensor</th>
+        <th>Value</th>
+      </tr>
+      <tr>
+        <td>Temperature (°C)</td>
+        <td>)=====";
+  
+  html += String(temperature);
+  html += R"=====(</td></tr>
+      <tr>
+        <td>Humidity (%)</td>
+        <td>)=====";
+  
+  html += String(humidity);
+  html += R"=====(</td></tr>
+      <tr>
+        <td>Soil Moisture</td>
+        <td>)=====";
+
+  html += String(soilMoisture);
+  html += R"=====(</td></tr>
+      <tr>
+        <td>Relay Status</td>
+        <td class="status" style="color: )=====";
+  
+  html += (relayStatus ? "green" : "red");
+  html += R"=====(">)=====";
+  html += (relayStatus ? "ON" : "OFF");
+  html += R"=====(</td></tr>
+    </table>
+  </div>
+</body>
+</html>
+)=====";
+
+  return html;
+}
+
+void setup() {
+  Serial.begin(115200); // Start the serial communication
+  delay(10);
+
+  pinMode(RELAYPIN, OUTPUT);   // Set the relay pin as output
+  digitalWrite(RELAYPIN, LOW); // Initially turn off the relay
+
+  dht.begin(); // Initialize the DHT sensor
+
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.print(".");
+  }
+
+  Serial.println("Connected to WiFi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.begin(); // Start the web server
+}
+
+void loop() {
+  // Read temperature and humidity from the DHT sensor
+  temperature = dht.readTemperature();
+  humidity = dht.readHumidity();
+
+  // Read soil moisture value
+  soilMoisture = analogRead(SOILMOISTUREPIN);
+
+  // Check if DHT sensor readings are valid
+  if (isnan(temperature) || isnan(humidity)) {
+    Serial.println("Failed to read from DHT sensor!");
+    return;
+  }
+
+  // Check if soil moisture is below the threshold and turn on the relay
+  if (soilMoisture < SOIL_MOISTURE_THRESHOLD) {
+    relayStatus = true;   // Set relay status to ON
+    digitalWrite(RELAYPIN, HIGH); // Turn on the relay (water pump)
+  } else {
+    relayStatus = false;  // Set relay status to OFF
+    digitalWrite(RELAYPIN, LOW); // Turn off the relay (water pump)
+  }
+
+  // Listen for incoming clients (requests from the browser)
+  WiFiClient client = server.available();
+  
+  if (client) {
+    String currentLine = ""; // String to hold incoming data from the client
+
+    // Wait until the client sends data
+    while (client.connected()) {
+      if (client.available()) {
+        char c = client.read(); // Read the incoming byte
+
+        // If the byte is a newline, send an HTTP response
+        if (c == '\n') {
+          if (currentLine.length() == 0) {
+            // HTTP response header
+            client.print("HTTP/1.1 200 OK\r\n");
+            client.print("Content-Type: text/html\r\n\r\n");
+
+            // Send the HTML page generated by the generateHTML function
+            client.print(generateHTML());
+            break;
+          } else {
+            currentLine = "";
+          }
+        } else if (c != '\r') {
+          currentLine += c;  // Add the character to the current line
+        }
+      }
+    }
+    delay(1);
+    client.stop(); // Close the connection
+  }
+
+  delay(5000); // Wait for 5 seconds before updating the values
+}
